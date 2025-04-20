@@ -1,0 +1,6 @@
+# HiVT/requirements.txt
+torch==2.0.0
+torch_geometric==2.3.0
+pytorch_lightning==2.0.0
+torchmetrics==1.0.0
+argoverse==1.0.0
