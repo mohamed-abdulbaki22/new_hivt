@@ -216,7 +216,6 @@ class AAEncoder(MessagePassing):
 
 
 class TemporalEncoder(nn.Module):
-
     def __init__(self,
                  historical_steps: int,
                  embed_dim: int,

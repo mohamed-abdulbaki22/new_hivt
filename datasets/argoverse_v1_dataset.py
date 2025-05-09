@@ -95,7 +95,7 @@ def process_argoverse(split: str,
 
     # filter out actors that are unseen during the historical time steps
     timestamps = list(np.sort(df['TIMESTAMP'].unique()))
-    historical_timestamps = timestamps[: 20]
+    historical_timestamps = timestamps[:30]  # Changed from 20 to 30
     historical_df = df[df['TIMESTAMP'].isin(historical_timestamps)]
     actor_ids = list(historical_df['TRACK_ID'].unique())
     df = df[df['TRACK_ID'].isin(actor_ids)]
@@ -108,65 +108,65 @@ def process_argoverse(split: str,
     city = df['CITY_NAME'].values[0]
 
     # make the scene centered at AV
-    origin = torch.tensor([av_df[19]['X'], av_df[19]['Y']], dtype=torch.float)
-    av_heading_vector = origin - torch.tensor([av_df[18]['X'], av_df[18]['Y']], dtype=torch.float)
+    origin = torch.tensor([av_df[29]['X'], av_df[29]['Y']], dtype=torch.float)  # Changed from 19 to 29
+    av_heading_vector = origin - torch.tensor([av_df[28]['X'], av_df[28]['Y']], dtype=torch.float)  # Changed from 18 to 28
     theta = torch.atan2(av_heading_vector[1], av_heading_vector[0])
     rotate_mat = torch.tensor([[torch.cos(theta), -torch.sin(theta)],
                                [torch.sin(theta), torch.cos(theta)]])
 
     # initialization
-    x = torch.zeros(num_nodes, 50, 2, dtype=torch.float)
+    x = torch.zeros(num_nodes, 50, 2, dtype=torch.float)  # Total 50 time steps (30 historical + 20 future)
     edge_index = torch.LongTensor(list(permutations(range(num_nodes), 2))).t().contiguous()
-    padding_mask = torch.ones(num_nodes, 50, dtype=torch.bool)
-    bos_mask = torch.zeros(num_nodes, 20, dtype=torch.bool)
+    padding_mask = torch.ones(num_nodes, 50, dtype=torch.bool)  # Total 50 time steps
+    bos_mask = torch.zeros(num_nodes, 30, dtype=torch.bool)  # Changed from 20 to 30
     rotate_angles = torch.zeros(num_nodes, dtype=torch.float)
 
     for actor_id, actor_df in df.groupby('TRACK_ID'):
         node_idx = actor_ids.index(actor_id)
         node_steps = [timestamps.index(timestamp) for timestamp in actor_df['TIMESTAMP']]
         padding_mask[node_idx, node_steps] = False
-        if padding_mask[node_idx, 19]:  # make no predictions for actors that are unseen at the current time step
-            padding_mask[node_idx, 20:] = True
+        if padding_mask[node_idx, 29]:  # Changed from 19 to 29
+            padding_mask[node_idx, 30:] = True  # Changed from 20 to 30
         xy = torch.from_numpy(np.stack([actor_df['X'].values, actor_df['Y'].values], axis=-1)).float()
         x[node_idx, node_steps] = torch.matmul(xy - origin, rotate_mat)
-        node_historical_steps = list(filter(lambda node_step: node_step < 20, node_steps))
-        if len(node_historical_steps) > 1:  # calculate the heading of the actor (approximately)
+        node_historical_steps = list(filter(lambda node_step: node_step < 30, node_steps))  # Changed from 20 to 30
+        if len(node_historical_steps) > 1:
             heading_vector = x[node_idx, node_historical_steps[-1]] - x[node_idx, node_historical_steps[-2]]
             rotate_angles[node_idx] = torch.atan2(heading_vector[1], heading_vector[0])
-        else:  # make no predictions for the actor if the number of valid time steps is less than 2
-            padding_mask[node_idx, 20:] = True
+        else:
+            padding_mask[node_idx, 30:] = True  # Changed from 20 to 30
 
     # bos_mask is True if time step t is valid and time step t-1 is invalid
     bos_mask[:, 0] = ~padding_mask[:, 0]
-    bos_mask[:, 1: 20] = padding_mask[:, : 19] & ~padding_mask[:, 1: 20]
+    bos_mask[:, 1:30] = padding_mask[:, :29] & ~padding_mask[:, 1:30]  # Changed from 1:20 to 1:30, :19 to :29
 
     positions = x.clone()
-    x[:, 20:] = torch.where((padding_mask[:, 19].unsqueeze(-1) | padding_mask[:, 20:]).unsqueeze(-1),
-                            torch.zeros(num_nodes, 30, 2),
-                            x[:, 20:] - x[:, 19].unsqueeze(-2))
-    x[:, 1: 20] = torch.where((padding_mask[:, : 19] | padding_mask[:, 1: 20]).unsqueeze(-1),
-                              torch.zeros(num_nodes, 19, 2),
-                              x[:, 1: 20] - x[:, : 19])
+    x[:, 30:] = torch.where((padding_mask[:, 29].unsqueeze(-1) | padding_mask[:, 30:]).unsqueeze(-1),  # Changed indices
+                            torch.zeros(num_nodes, 20, 2),  # Changed from 30 to 20
+                            x[:, 30:] - x[:, 29].unsqueeze(-2))  # Changed from 19 to 29
+    x[:, 1:30] = torch.where((padding_mask[:, :29] | padding_mask[:, 1:30]).unsqueeze(-1),  # Changed indices
+                             torch.zeros(num_nodes, 29, 2),  # Changed from 19 to 29
+                             x[:, 1:30] - x[:, :29])  # Changed indices
     x[:, 0] = torch.zeros(num_nodes, 2)
 
     # get lane features at the current time step
-    df_19 = df[df['TIMESTAMP'] == timestamps[19]]
-    node_inds_19 = [actor_ids.index(actor_id) for actor_id in df_19['TRACK_ID']]
-    node_positions_19 = torch.from_numpy(np.stack([df_19['X'].values, df_19['Y'].values], axis=-1)).float()
+    df_29 = df[df['TIMESTAMP'] == timestamps[29]]  # Changed from 19 to 29
+    node_inds_29 = [actor_ids.index(actor_id) for actor_id in df_29['TRACK_ID']]
+    node_positions_29 = torch.from_numpy(np.stack([df_29['X'].values, df_29['Y'].values], axis=-1)).float()
     (lane_vectors, is_intersections, turn_directions, traffic_controls, lane_actor_index,
-     lane_actor_vectors) = get_lane_features(am, node_inds_19, node_positions_19, origin, rotate_mat, city, radius)
+     lane_actor_vectors) = get_lane_features(am, node_inds_29, node_positions_29, origin, rotate_mat, city, radius)
 
-    y = None if split == 'test' else x[:, 20:]
+    y = None if split == 'test' else x[:, 30:]  # Changed from 20 to 30
     seq_id = os.path.splitext(os.path.basename(raw_path))[0]
 
     return {
-        'x': x[:, : 20],  # [N, 20, 2]
+        'x': x[:, :30],  # [N, 30, 2] Changed from 20 to 30
         'positions': positions,  # [N, 50, 2]
         'edge_index': edge_index,  # [2, N x N - 1]
-        'y': y,  # [N, 30, 2]
+        'y': y,  # [N, 20, 2] Changed from 30 to 20
         'num_nodes': num_nodes,
         'padding_mask': padding_mask,  # [N, 50]
-        'bos_mask': bos_mask,  # [N, 20]
+        'bos_mask': bos_mask,  # [N, 30] Changed from 20 to 30
         'rotate_angles': rotate_angles,  # [N]
         'lane_vectors': lane_vectors,  # [L, 2]
         'is_intersections': is_intersections,  # [L]

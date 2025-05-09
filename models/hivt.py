@@ -180,8 +180,8 @@ class HiVT(pl.LightningModule):
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group('HiVT')
-        parser.add_argument('--historical_steps', type=int, default=20)
-        parser.add_argument('--future_steps', type=int, default=30)
+        parser.add_argument('--historical_steps', type=int, default=30)  # Changed from 20 to 30
+        parser.add_argument('--future_steps', type=int, default=20)     # Changed from 30 to 20
         parser.add_argument('--num_modes', type=int, default=6)
         parser.add_argument('--rotate', type=bool, default=True)
         parser.add_argument('--node_dim', type=int, default=2)

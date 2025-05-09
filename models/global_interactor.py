@@ -60,7 +60,7 @@ class GlobalInteractor(nn.Module):
                 local_embed: torch.Tensor) -> torch.Tensor:
         edge_index, _ = subgraph(subset=~data['padding_mask'][:, self.historical_steps - 1], edge_index=data.edge_index)
         rel_pos = data['positions'][edge_index[0], self.historical_steps - 1] - data['positions'][
-            edge_index[1], self.historical_steps - 1]
+            edge_index[1], self.historical_steps - 1]  # Now uses index 29
         if data['rotate_mat'] is None:
             rel_embed = self.rel_embed(rel_pos)
         else:

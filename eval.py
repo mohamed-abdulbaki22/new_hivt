@@ -34,12 +34,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     trainer = pl.Trainer(
-    accelerator='auto',
-    devices=1 if torch.cuda.is_available() else 0,
-    enable_progress_bar=True,
-    logger=False
+        accelerator='auto',
+        devices=1 if torch.cuda.is_available() else 0,
+        enable_progress_bar=True,
+        logger=False
     )
-    # Change model loading to:
     model = HiVT.load_from_checkpoint(
         checkpoint_path=args.ckpt_path,
         map_location='cuda' if torch.cuda.is_available() else 'cpu',
@@ -49,3 +48,4 @@ if __name__ == '__main__':
     dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers,
                             pin_memory=args.pin_memory, persistent_workers=args.persistent_workers)
     trainer.validate(model, dataloader)
+    
