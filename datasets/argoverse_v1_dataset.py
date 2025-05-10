@@ -22,7 +22,9 @@ import torch
 from argoverse.map_representation.map_api import ArgoverseMap
 from torch_geometric.data import Data
 from torch_geometric.data import Dataset
+from torch_geometric.data.data import DataEdgeAttr  # Import DataEdgeAttr
 from tqdm import tqdm
+from torch_geometric.data.data import DataEdgeAttr, DataTensorAttr  # Add this line
 
 from utils import TemporalData
 
@@ -49,7 +51,7 @@ class ArgoverseV1Dataset(Dataset):
             raise ValueError(split + ' is not valid')
         self.root = root
         self._raw_file_names = os.listdir(self.raw_dir)
-        self._processed_file_names = [os.path.splitext(f)[0] + '.pt' for f in self.raw_file_names]
+        self._processed_file_names = [os.path.splitext(f)[0] + '.pt' for f in self._raw_file_names]
         self._processed_paths = [os.path.join(self.processed_dir, f) for f in self._processed_file_names]
         super(ArgoverseV1Dataset, self).__init__(root, transform=transform)
 
@@ -83,8 +85,11 @@ class ArgoverseV1Dataset(Dataset):
     def len(self) -> int:
         return len(self._raw_file_names)
 
+
     def get(self, idx) -> Data:
-        return torch.load(self.processed_paths[idx])
+        # Allowlist all required classes
+        with torch.serialization.safe_globals([TemporalData, DataEdgeAttr, DataTensorAttr]):
+            return torch.load(self.processed_paths[idx])
 
 
 def process_argoverse(split: str,
