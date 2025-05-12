@@ -85,7 +85,7 @@ class HiVT(pl.LightningModule):
 
         self.minADE = ADE()
         self.minFDE = FDE()
-        self.minMR = MR(miss_threshold=2.0)  # Add threshold parameter
+        self.minMR = MR(miss_threshold=2.0)
 
     def forward(self, data: TemporalData):
         if self.rotate:
@@ -112,7 +112,7 @@ class HiVT(pl.LightningModule):
         reg_mask = ~data['padding_mask'][:, self.historical_steps:]
         valid_steps = reg_mask.sum(dim=-1)
         cls_mask = valid_steps > 0
-        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N]
+        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)
         best_mode = l2_norm.argmin(dim=0)
         y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]
         reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])
@@ -125,7 +125,7 @@ class HiVT(pl.LightningModule):
     def validation_step(self, data, batch_idx):
         y_hat, pi = self(data)
         reg_mask = ~data['padding_mask'][:, self.historical_steps:]
-        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)  # [F, N]
+        l2_norm = (torch.norm(y_hat[:, :, :, : 2] - data.y, p=2, dim=-1) * reg_mask).sum(dim=-1)
         best_mode = l2_norm.argmin(dim=0)
         y_hat_best = y_hat[best_mode, torch.arange(data.num_nodes)]
         reg_loss = self.reg_loss(y_hat_best[reg_mask], data.y[reg_mask])
@@ -180,8 +180,8 @@ class HiVT(pl.LightningModule):
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group('HiVT')
-        parser.add_argument('--historical_steps', type=int, default=20)
-        parser.add_argument('--future_steps', type=int, default=30)
+        parser.add_argument('--historical_steps', type=int, default=30)
+        parser.add_argument('--future_steps', type=int, default=20)
         parser.add_argument('--num_modes', type=int, default=6)
         parser.add_argument('--rotate', type=bool, default=True)
         parser.add_argument('--node_dim', type=int, default=2)
@@ -197,3 +197,4 @@ class HiVT(pl.LightningModule):
         parser.add_argument('--weight_decay', type=float, default=1e-4)
         parser.add_argument('--T_max', type=int, default=64)
         return parent_parser
+    
