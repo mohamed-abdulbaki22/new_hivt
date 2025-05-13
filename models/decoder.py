@@ -85,7 +85,6 @@ class GRUDecoder(nn.Module):
 
 
 class MLPDecoder(nn.Module):
-
     def __init__(self,
                  local_channels: int,
                  global_channels: int,
@@ -100,22 +99,29 @@ class MLPDecoder(nn.Module):
         self.num_modes = num_modes
         self.uncertain = uncertain
         self.min_scale = min_scale
+        self.embed_dim = local_channels + global_channels
 
+        # Learnable intention queries for each mode
+        self.intention_queries = nn.Parameter(
+            torch.randn(self.num_modes, self.embed_dim) * 0.02
+        )
+
+        # MLP to aggregate embeddings (unchanged)
         self.aggr_embed = nn.Sequential(
             nn.Linear(self.input_size + self.hidden_size, self.hidden_size),
             nn.LayerNorm(self.hidden_size),
-            nn.ReLU(inplace=True))
-        self.loc = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size),
+            nn.ReLU(inplace=True)
+        )
+
+        # New MLP to process query-augmented inputs for trajectory predictions
+        self.mode_mlp = nn.Sequential(
+            nn.Linear(self.embed_dim * 2, self.hidden_size),
             nn.LayerNorm(self.hidden_size),
             nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_size, self.future_steps * 2))
-        if uncertain:
-            self.scale = nn.Sequential(
-                nn.Linear(self.hidden_size, self.hidden_size),
-                nn.LayerNorm(self.hidden_size),
-                nn.ReLU(inplace=True),
-                nn.Linear(self.hidden_size, self.future_steps * 2))
+            nn.Linear(self.hidden_size, self.future_steps * (4 if uncertain else 2))
+        )
+
+        # MLP for mode probabilities (unchanged)
         self.pi = nn.Sequential(
             nn.Linear(self.hidden_size + self.input_size, self.hidden_size),
             nn.LayerNorm(self.hidden_size),
@@ -123,19 +129,38 @@ class MLPDecoder(nn.Module):
             nn.Linear(self.hidden_size, self.hidden_size),
             nn.LayerNorm(self.hidden_size),
             nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_size, 1))
+            nn.Linear(self.hidden_size, 1)
+        )
         self.apply(init_weights)
 
     def forward(self,
                 local_embed: torch.Tensor,
                 global_embed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Compute mode probabilities (unchanged)
         pi = self.pi(torch.cat((local_embed.expand(self.num_modes, *local_embed.shape),
-                                global_embed), dim=-1)).squeeze(-1).t()
-        out = self.aggr_embed(torch.cat((global_embed, local_embed.expand(self.num_modes, *local_embed.shape)), dim=-1))
-        loc = self.loc(out).view(self.num_modes, -1, self.future_steps, 2)  # [F, N, H, 2]
+                                global_embed), dim=-1)).squeeze(-1).t()  # [N, F]
+
+        # Aggregate embeddings
+        combined_embed = torch.cat((global_embed, local_embed.expand(self.num_modes, *global_embed.shape)), dim=-1)
+        aggr_out = self.aggr_embed(combined_embed)  # [F, N, hidden_size]
+
+        # Expand embeddings and queries for all modes and nodes
+        num_nodes = local_embed.size(0)
+        aggr_out = aggr_out.view(self.num_modes, num_nodes, -1)  # [F, N, hidden_size]
+        combined_embed = combined_embed.view(self.num_modes, num_nodes, -1)  # [F, N, embed_dim]
+
+        # Concatenate with intention queries
+        queries = self.intention_queries.unsqueeze(1).expand(-1, num_nodes, -1)  # [F, N, embed_dim]
+        query_input = torch.cat((combined_embed, queries), dim=-1)  # [F, N, embed_dim * 2]
+
+        # Generate predictions for each mode
+        mode_out = self.mode_mlp(query_input)  # [F, N, future_steps * (4 or 2)]
         if self.uncertain:
-            scale = F.elu_(self.scale(out), alpha=1.0).view(self.num_modes, -1, self.future_steps, 2) + 1.0
-            scale = scale + self.min_scale  # [F, N, H, 2]
-            return torch.cat((loc, scale), dim=-1), pi  # [F, N, H, 4], [N, F]
+            mode_out = mode_out.view(self.num_modes, num_nodes, self.future_steps, 4)
+            loc = mode_out[..., :2]  # [F, N, H, 2]
+            scale = F.elu_(mode_out[..., 2:], alpha=1.0) + 1.0 + self.min_scale  # [F, N, H, 2]
+            y_hat = torch.cat((loc, scale), dim=-1)  # [F, N, H, 4]
         else:
-            return loc, pi  # [F, N, H, 2], [N, F]
+            y_hat = mode_out.view(self.num_modes, num_nodes, self.future_steps, 2)  # [F, N, H, 2]
+
+        return y_hat, pi  # [F, N, H, 4 or 2], [N, F]
