@@ -136,68 +136,71 @@ class MLPDecoder(nn.Module):
         else:
             return loc, pi  # [F, N, H, 2], [N, F]
 
+
 class TransformerDecoderWithQueries(nn.Module):
-    def __init__(self, local_channels, global_channels, embed_dim, num_modes, future_steps, num_layers=3, uncertain=False, min_scale=0.001):
-        super().__init__()
+    def __init__(self,
+                 local_channels: int,
+                 global_channels: int,
+                 future_steps: int,
+                 num_modes: int,
+                 embed_dim: int,
+                 num_layers: int = 3,
+                 nhead: int = 8,
+                 uncertain: bool = True,
+                 min_scale: float = 1e-3) -> None:
+        super(TransformerDecoderWithQueries, self).__init__()
         self.num_modes = num_modes
         self.future_steps = future_steps
         self.uncertain = uncertain
         self.min_scale = min_scale
-        
+        self.embed_dim = embed_dim
+
         # Projection layers
         self.memory_proj = nn.Linear(local_channels, embed_dim)
         self.global_proj = nn.Linear(global_channels, embed_dim)
-        
+
         # Learnable queries
         self.query_embed = nn.Parameter(torch.randn(num_modes, embed_dim))
-        
+
         # Transformer decoder
-        decoder_layer = nn.TransformerDecoderLayer(d_model=embed_dim, nhead=8)
+        decoder_layer = nn.TransformerDecoderLayer(d_model=embed_dim, nhead=nhead, dim_feedforward=embed_dim * 4)
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
-        
-        # Prediction heads
-        self.loc_head = nn.Linear(embed_dim, future_steps * 2)
-        if uncertain:
-            self.scale_head = nn.Linear(embed_dim, future_steps * 2)
+
+        # Output heads
+        out_dim = future_steps * (4 if uncertain else 2)
+        self.traj_head = nn.Linear(embed_dim, out_dim)
         self.pi_head = nn.Linear(embed_dim, 1)
 
-    def forward(self, local_embed: torch.Tensor, global_embed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            local_embed: [total_num_nodes, local_channels]
-            global_embed: [num_modes, total_num_nodes, global_channels]
-        Returns:
-            y_hat: [num_modes, total_num_nodes, future_steps, 2] or [num_modes, total_num_nodes, future_steps, 4] if uncertain
-            pi: [total_num_nodes, num_modes]
-        """
-        # Prepare memory from local_embed
+    def forward(self,
+                local_embed: torch.Tensor,
+                global_embed: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # Shapes:
+        # local_embed: [total_num_nodes, local_channels]
+        # global_embed: [num_modes, total_num_nodes, global_channels]
+
+        # Project local_embed to memory
         memory = self.memory_proj(local_embed).unsqueeze(0)  # [1, total_num_nodes, embed_dim]
 
-        # Project global_embed to match embed_dim
+        # Project global_embed
         global_proj = self.global_proj(global_embed)  # [num_modes, total_num_nodes, embed_dim]
 
-        # Expand query_embed and combine with global_proj
-        queries = self.query_embed.unsqueeze(1).expand(-1, local_embed.size(0), -1)  # [num_modes, total_num_nodes, embed_dim]
-        tgt = queries + global_proj  # [num_modes, total_num_nodes, embed_dim]
+        # Combine with learnable queries
+        queries = self.query_embed.unsqueeze(1) + global_proj  # [num_modes, total_num_nodes, embed_dim]
 
         # Run transformer decoder
-        output = self.transformer_decoder(tgt=tgt, memory=memory)  # [num_modes, total_num_nodes, embed_dim]
+        output = self.transformer_decoder(tgt=queries, memory=memory)  # [num_modes, total_num_nodes, embed_dim]
 
-        # Reshape for prediction
-        output = output.permute(1, 0, 2)  # [total_num_nodes, num_modes, embed_dim]
+        # Permute to [total_num_nodes, num_modes, embed_dim]
+        output = output.permute(1, 0, 2)
 
         # Predict trajectories
-        loc = self.loc_head(output).view(-1, self.num_modes, self.future_steps, 2)  # [total_num_nodes, num_modes, future_steps, 2]
-
-        if self.uncertain:
-            scale = F.elu(self.scale_head(output), alpha=1.0).view(-1, self.num_modes, self.future_steps, 2) + 1.0
-            scale = scale + self.min_scale  # [total_num_nodes, num_modes, future_steps, 2]
-            y_hat = torch.cat([loc, scale], dim=-1).permute(1, 0, 2, 3)  # [num_modes, total_num_nodes, future_steps, 4]
-        else:
-            y_hat = loc.permute(1, 0, 2, 3)  # [num_modes, total_num_nodes, future_steps, 2]
+        traj = self.traj_head(output.view(-1, self.embed_dim)).view(
+            -1, self.num_modes, self.future_steps, 4 if self.uncertain else 2
+        )
+        y_hat = traj.permute(1, 0, 2, 3)  # [num_modes, total_num_nodes, future_steps, 4 or 2]
 
         # Predict mode probabilities
         pi_logits = self.pi_head(output).squeeze(-1)  # [total_num_nodes, num_modes]
-        pi = F.softmax(pi_logits, dim=-1)  # [total_num_nodes, num_modes]
+        pi = F.softmax(pi_logits, dim=-1)
 
         return y_hat, pi
