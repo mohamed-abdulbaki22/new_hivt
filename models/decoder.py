@@ -137,48 +137,25 @@ class MLPDecoder(nn.Module):
             return loc, pi  # [F, N, H, 2], [N, F]
 
 class TransformerDecoderWithQueries(nn.Module):
-    def __init__(self,
-                 local_channels: int,
-                 global_channels: int,
-                 future_steps: int,
-                 num_modes: int,
-                 embed_dim: int = 256,
-                 num_layers: int = 3,
-                 nhead: int = 8,
-                 uncertain: bool = True,
-                 min_scale: float = 1e-3) -> None:
-        """
-        Transformer-based decoder with learnable intention queries for motion forecasting.
-        
-        Args:
-            local_channels (int): Dimension of local embeddings from LocalEncoder.
-            global_channels (int): Dimension of global embeddings from GlobalInteractor.
-            future_steps (int): Number of future time steps to predict.
-            num_modes (int): Number of prediction modes (motion intentions).
-            embed_dim (int): Embedding dimension for transformer layers.
-            num_layers (int): Number of transformer decoder layers.
-            nhead (int): Number of attention heads in transformer layers.
-        """
-        super(TransformerDecoderWithQueries, self).__init__()
-        self.local_channels = local_channels
-        self.global_channels = global_channels
-        self.future_steps = future_steps
+    def __init__(self, local_channels, global_channels, embed_dim, num_modes, future_steps, num_layers=3, uncertain=False, min_scale=0.001):
+        super().__init__()
         self.num_modes = num_modes
-        self.embed_dim = embed_dim
+        self.future_steps = future_steps
         self.uncertain = uncertain
         self.min_scale = min_scale
-
-        # Learnable intention queries
+        
+        # Projection layers
+        self.memory_proj = nn.Linear(local_channels, embed_dim)
+        self.global_proj = nn.Linear(global_channels, embed_dim)
+        
+        # Learnable queries
         self.query_embed = nn.Parameter(torch.randn(num_modes, embed_dim))
-
-        # Project context to embed_dim
-        self.memory_proj = nn.Linear(local_channels + global_channels, embed_dim)
-
-        # Transformer decoder layer
-        decoder_layer = nn.TransformerDecoderLayer(d_model=embed_dim, nhead=nhead, dim_feedforward=embed_dim * 4)
+        
+        # Transformer decoder
+        decoder_layer = nn.TransformerDecoderLayer(d_model=embed_dim, nhead=8)
         self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_layers)
-
-        # Output heads
+        
+        # Prediction heads
         self.loc_head = nn.Linear(embed_dim, future_steps * 2)
         if uncertain:
             self.scale_head = nn.Linear(embed_dim, future_steps * 2)
@@ -186,36 +163,34 @@ class TransformerDecoderWithQueries(nn.Module):
 
     def forward(self, local_embed: torch.Tensor, global_embed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Forward pass to predict trajectories and mode probabilities.
-        
         Args:
-            local_embed (torch.Tensor): Local embeddings. Shape: [batch_size, num_nodes, local_channels]
-            global_embed (torch.Tensor): Global embeddings. Shape: [batch_size, num_nodes, global_channels]
-        
+            local_embed: [total_num_nodes, local_channels]
+            global_embed: [num_modes, total_num_nodes, global_channels]
         Returns:
-            y_hat (torch.Tensor): Predicted trajectories. Shape: [batch_size, num_nodes, num_modes, future_steps, 2]
-            pi (torch.Tensor): Mode probabilities. Shape: [batch_size, num_nodes, num_modes]
+            y_hat: [num_modes, total_num_nodes, future_steps, 2] or [num_modes, total_num_nodes, future_steps, 4] if uncertain
+            pi: [total_num_nodes, num_modes]
         """
-        # Concatenate local and global embeddings
-        context = torch.cat([local_embed, global_embed], dim=-1)  # [total_num_nodes, local_channels + global_channels]
+        # Prepare memory from local_embed
+        memory = self.memory_proj(local_embed).unsqueeze(0)  # [1, total_num_nodes, embed_dim]
 
-        # Project context to embed_dim
-        memory = self.memory_proj(context).unsqueeze(0)  # [1, total_num_nodes, embed_dim]
+        # Project global_embed to match embed_dim
+        global_proj = self.global_proj(global_embed)  # [num_modes, total_num_nodes, embed_dim]
 
-        # Expand queries for all agents
-        queries = self.query_embed.unsqueeze(1).expand(-1, context.size(0), -1)  # [num_modes, total_num_nodes, embed_dim]
+        # Expand query_embed and combine with global_proj
+        queries = self.query_embed.unsqueeze(1).expand(-1, local_embed.size(0), -1)  # [num_modes, total_num_nodes, embed_dim]
+        tgt = queries + global_proj  # [num_modes, total_num_nodes, embed_dim]
 
-        # Transformer decoder
-        output = self.transformer_decoder(tgt=queries, memory=memory)  # [num_modes, total_num_nodes, embed_dim]
+        # Run transformer decoder
+        output = self.transformer_decoder(tgt=tgt, memory=memory)  # [num_modes, total_num_nodes, embed_dim]
 
-        # Reshape output
+        # Reshape for prediction
         output = output.permute(1, 0, 2)  # [total_num_nodes, num_modes, embed_dim]
 
-        # Predict locations
+        # Predict trajectories
         loc = self.loc_head(output).view(-1, self.num_modes, self.future_steps, 2)  # [total_num_nodes, num_modes, future_steps, 2]
 
         if self.uncertain:
-            scale = F.elu_(self.scale_head(output), alpha=1.0).view(-1, self.num_modes, self.future_steps, 2) + 1.0
+            scale = F.elu(self.scale_head(output), alpha=1.0).view(-1, self.num_modes, self.future_steps, 2) + 1.0
             scale = scale + self.min_scale  # [total_num_nodes, num_modes, future_steps, 2]
             y_hat = torch.cat([loc, scale], dim=-1).permute(1, 0, 2, 3)  # [num_modes, total_num_nodes, future_steps, 4]
         else:
