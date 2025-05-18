@@ -160,13 +160,6 @@ class TransformerDecoder(nn.Module):
         # Mode embeddings and positional encoding
         self.mode_queries = nn.Parameter(torch.randn(num_modes, self.embed_dim))
         self.pos_encoder = PositionalEncoding(self.embed_dim, max_len=future_steps)
-        
-        # Context fusion
-        self.context_fusion = nn.Sequential(
-            nn.Linear(self.embed_dim*2, self.embed_dim),
-            nn.LayerNorm(self.embed_dim),
-            nn.ReLU(inplace=True)
-        )
 
         # Transformer layers
         self.decoder_layer = nn.TransformerDecoderLayer(
@@ -197,63 +190,49 @@ class TransformerDecoder(nn.Module):
         self.apply(init_weights)
 
     def forward(self, local_embed: torch.Tensor, global_embed: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Combine local (N, D) and global (F, N, D) embeddings
-        local_expanded = local_embed.unsqueeze(0).expand(self.num_modes, -1, -1)  # [F, N, D]
-        
-        # Better context fusion
-        context = self.context_fusion(torch.cat([global_embed, local_expanded], dim=-1))  # [F, N, D]
+        # Get dimensions
+        N = local_embed.size(0)  # Number of nodes
+        F = self.num_modes       # Number of modes
+        H = self.future_steps    # Future steps
+        D = self.embed_dim       # Embedding dimension
 
-        # Prepare queries with positional encoding
-        # Shape: mode queries [F, D] -> [F, H, D] where H is future_steps
-        queries = self.mode_queries.unsqueeze(1).expand(-1, self.future_steps, -1)  # [F, H, D]
-        
-        # Reshape for transformer: [seq_len, batch, embed_dim]
-        queries = queries.permute(1, 0, 2)  # [H, F, D]
-        
-        # Add positional encoding to queries
-        queries = self.pos_encoder(queries)  # [H, F, D]
-        
-        # Prepare memory: [seq_len, batch, embed_dim]
-        memory = context.permute(2, 0, 1)  # [D, F, N]
-        memory = memory.reshape(self.embed_dim, -1).transpose(0, 1)  # [F*N, D]
-        memory = memory.unsqueeze(0).expand(self.future_steps, -1, -1)  # [H, F*N, D]
-        
-        # Run transformer decoder
-        # queries: [H, F, D], memory: [H, F*N, D]
-        decoded = self.decoder(queries, memory)  # [H, F, D]
-        
-        # Reshape back to [F, H, N, D]
-        decoded = decoded.permute(1, 0, 2)  # [F, H, D]
-        decoded = decoded.unsqueeze(2).expand(-1, -1, local_embed.size(0), -1)  # [F, H, N, D]
+        # Prepare tgt: [H, N*F, D]
+        mode_emb = self.mode_queries.unsqueeze(0).expand(N, -1, -1).reshape(N * F, D)  # [N*F, D]
+        pos_emb = self.pos_encoder.pe[:H]  # [H, 1, D]
+        tgt = pos_emb + mode_emb.unsqueeze(0)  # [H, N*F, D]
+
+        # Prepare memory: [1, N*F, D]
+        memory = global_embed.permute(1, 0, 2).reshape(N * F, D).unsqueeze(0)  # [1, N*F, D]
+
+        # Decode
+        decoded = self.decoder(tgt, memory)  # [H, N*F, D]
 
         # Predict locations and scales
-        loc = self.loc_head(decoded)  # [F, H, N, 2]
+        loc = self.loc_head(decoded)  # [H, N*F, 2]
         if self.uncertain:
-            scale = self.scale_head(decoded) + self.min_scale
-            output = torch.cat([loc, scale], dim=-1)  # [F, H, N, 4]
+            scale = self.scale_head(decoded) + self.min_scale  # [H, N*F, 2]
+            output = torch.cat([loc, scale], dim=-1)  # [H, N*F, 4]
         else:
-            output = loc
+            output = loc  # [H, N*F, 2]
 
-        # Compute pi (mode probabilities)
-        pi_input = torch.cat([local_embed.unsqueeze(0).expand(self.num_modes, -1, -1), global_embed], dim=-1)
+        # Reshape and permute to [F, N, H, 4] or [F, N, H, 2]
+        output = output.view(H, N, F, -1).permute(2, 1, 0, 3)  # [F, N, H, 4] or [F, N, H, 2]
+
+        # Compute mode probabilities (pi)
+        pi_input = torch.cat([local_embed.unsqueeze(0).expand(F, -1, -1), global_embed], dim=-1)  # [F, N, 2*D]
         pi = self.pi(pi_input).squeeze(-1).t()  # [N, F]
 
-        return output.permute(0, 2, 1, 3), pi  # [F, N, H, 4], [N, F]
-
+        return output, pi
 
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int = 1000):
         super().__init__()
         position = torch.arange(max_len).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, d_model)
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
         self.register_buffer('pe', pe)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
-        """
         return x + self.pe[:x.size(0)]
