@@ -24,6 +24,7 @@ from metrics import MR
 from models import GlobalInteractor
 from models import LocalEncoder
 from models import MLPDecoder
+from models import TransformerDecoder  # Add this line
 from utils import TemporalData
 
 
@@ -75,11 +76,11 @@ class HiVT(pl.LightningModule):
                                                   num_layers=num_global_layers,
                                                   dropout=dropout,
                                                   rotate=rotate)
-        self.decoder = MLPDecoder(local_channels=embed_dim,
-                                  global_channels=embed_dim,
-                                  future_steps=future_steps,
-                                  num_modes=num_modes,
-                                  uncertain=True)
+        self.decoder = TransformerDecoder(local_channels=embed_dim,
+                              global_channels=embed_dim,
+                              future_steps=future_steps,
+                              num_modes=num_modes,
+                              uncertain=True)
         self.reg_loss = LaplaceNLLLoss(reduction='mean')
         self.cls_loss = SoftTargetCrossEntropyLoss(reduction='mean')
 
