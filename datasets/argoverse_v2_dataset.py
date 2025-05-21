@@ -184,9 +184,6 @@ def process_argoverse_v2(split: str,
     if av_index == -1:
         av_index = focal_index
     
-    # Initialize object type tensor
-    object_types = torch.zeros(num_nodes, 4, dtype=torch.float)  # [vehicle, pedestrian, cyclist, other]
-    
     # Process each track's trajectory data
     for track in scenario.tracks:
         if track.track_id not in track_id_to_index:
@@ -266,19 +263,6 @@ def process_argoverse_v2(split: str,
         else:
             # Make no predictions for actors with less than 2 valid historical time steps
             padding_mask[node_idx, 50:] = True
-        
-        # Set object type as a one-hot encoded feature
-        if track.object_type == ObjectType.VEHICLE:
-            object_types[node_idx, 0] = 1
-        elif track.object_type == ObjectType.PEDESTRIAN:
-            object_types[node_idx, 1] = 1
-        elif track.object_type == ObjectType.CYCLIST:
-            object_types[node_idx, 2] = 1
-        else:
-            object_types[node_idx, 3] = 1
-    
-    # Expand object type to match timesteps dimension
-    object_type_expanded = object_types.unsqueeze(1).expand(-1, 50, -1)  # [N, 50, 4]
     
     # Set BOS mask (beginning of sequence)
     bos_mask[:, 0] = ~padding_mask[:, 0]
@@ -321,7 +305,7 @@ def process_argoverse_v2(split: str,
     y = None if split == 'test' else x[:, 50:]
     seq_id = scenario.scenario_id
     
-    node_features = torch.cat([x[:, :50], v[:, :50], h[:, :50].unsqueeze(-1), object_type_expanded], dim=-1)  # [N, 50, 9]
+    node_features = torch.cat([x[:, :50], v[:, :50], h[:, :50].unsqueeze(-1)], dim=-1)  # [N, 50, 5]
     
     return {
         'x': x[:, :50],                 # [N, 50, 2] - 5s history at 10Hz
@@ -346,7 +330,7 @@ def process_argoverse_v2(split: str,
         'city': scenario.city_name,
         'origin': origin.unsqueeze(0),
         'theta': torch.tensor(theta),
-        'node_features': node_features, # [N, 50, 9]
+        'node_features': node_features, # [N, 50, 5]
     }
 
 
