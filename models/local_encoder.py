@@ -159,10 +159,33 @@ class AAEncoder(MessagePassing):
             if rotate_mat is None:
                 center_embed = self.center_embed(x)
             else:
-                center_embed = self.center_embed(torch.bmm(x.unsqueeze(-2), rotate_mat).squeeze(-2))
+                print(f"rotate_mat shape: {rotate_mat.shape}")
+                if rotate_mat.dim() == 4 and rotate_mat.size(0) == 1:  # [1, num_nodes, 2, 2]
+                    rotate_mat_expanded = rotate_mat[0]  # Shape: [num_nodes, 2, 2]
+                elif rotate_mat.dim() == 3:  # [num_nodes, 2, 2]
+                    rotate_mat_expanded = rotate_mat
+                else:
+                    raise ValueError(f"Unexpected rotate_mat shape: {rotate_mat.shape}. Expected [1, num_nodes, 2, 2] or [num_nodes, 2, 2]")
+                
+                # Extract position (first 2 dimensions), velocity (next 2), and heading (last 1)
+                x_pos = x[:, :2]  # [num_nodes, 2]
+                x_vel = x[:, 2:4]  # [num_nodes, 2]
+                x_head = x[:, 4:5]  # [num_nodes, 1]
+                
+                # Rotate only the position
+                rotated_pos = torch.bmm(x_pos.unsqueeze(-2), rotate_mat_expanded).squeeze(-2)  # [num_nodes, 2]
+                
+                # Rotate velocity (since it's a 2D vector in the same coordinate frame)
+                rotated_vel = torch.bmm(x_vel.unsqueeze(-2), rotate_mat_expanded).squeeze(-2)  # [num_nodes, 2]
+                
+                # Heading doesn't need rotation (it's a scalar); just keep it as is
+                x_rotated = torch.cat([rotated_pos, rotated_vel, x_head], dim=-1)  # [num_nodes, 5]
+                
+                center_embed = self.center_embed(x_rotated)
+            
             center_embed = torch.where(bos_mask.unsqueeze(-1), self.bos_token[t], center_embed)
-        center_embed = center_embed + self._mha_block(self.norm1(center_embed), x, edge_index, edge_attr, rotate_mat,
-                                                      size)
+        
+        center_embed = center_embed + self._mha_block(self.norm1(center_embed), x, edge_index, edge_attr, rotate_mat, size)
         center_embed = center_embed + self._ff_block(self.norm2(center_embed))
         return center_embed
 
@@ -182,8 +205,24 @@ class AAEncoder(MessagePassing):
                 center_rotate_mat = rotate_mat.repeat(self.historical_steps, 1, 1)[edge_index[1]]
             else:
                 center_rotate_mat = rotate_mat[edge_index[1]]
-            nbr_embed = self.nbr_embed([torch.bmm(x_j.unsqueeze(-2), center_rotate_mat).squeeze(-2),
-                                        torch.bmm(edge_attr.unsqueeze(-2), center_rotate_mat).squeeze(-2)])
+            
+            # Extract position (first 2 dimensions), velocity (next 2), and heading (last 1) from x_j
+            x_j_pos = x_j[:, :2]  # [num_edges, 2]
+            x_j_vel = x_j[:, 2:4]  # [num_edges, 2]
+            x_j_head = x_j[:, 4:5]  # [num_edges, 1]
+            
+            # Rotate position and velocity
+            rotated_pos = torch.bmm(x_j_pos.unsqueeze(-2), center_rotate_mat).squeeze(-2)  # [num_edges, 2]
+            rotated_vel = torch.bmm(x_j_vel.unsqueeze(-2), center_rotate_mat).squeeze(-2)  # [num_edges, 2]
+            
+            # Concatenate rotated position, velocity, and original heading
+            x_j_rotated = torch.cat([rotated_pos, rotated_vel, x_j_head], dim=-1)  # [num_edges, 5]
+            
+            # Rotate edge_attr (which is a 2D vector)
+            edge_attr_rotated = torch.bmm(edge_attr.unsqueeze(-2), center_rotate_mat).squeeze(-2)  # [num_edges, 2]
+            
+            nbr_embed = self.nbr_embed([x_j_rotated, edge_attr_rotated])
+        
         query = self.lin_q(center_embed_i).view(-1, self.num_heads, self.embed_dim // self.num_heads)
         key = self.lin_k(nbr_embed).view(-1, self.num_heads, self.embed_dim // self.num_heads)
         value = self.lin_v(nbr_embed).view(-1, self.num_heads, self.embed_dim // self.num_heads)
@@ -274,7 +313,7 @@ class TemporalEncoderLayer(nn.Module):
                 src: torch.Tensor,
                 src_mask: Optional[torch.Tensor] = None,
                 src_key_padding_mask: Optional[torch.Tensor] = None,
-                is_causal: bool = False) -> torch.Tensor:  # Added is_causal
+                is_causal: bool = False) -> torch.Tensor:
         x = src
         x = x + self._sa_block(self.norm1(x), src_mask, src_key_padding_mask, is_causal)
         x = x + self._ff_block(self.norm2(x))
@@ -284,12 +323,12 @@ class TemporalEncoderLayer(nn.Module):
                   x: torch.Tensor,
                   attn_mask: Optional[torch.Tensor],
                   key_padding_mask: Optional[torch.Tensor],
-                  is_causal: bool = False) -> torch.Tensor:  # Added is_causal
+                  is_causal: bool = False) -> torch.Tensor:
         x = self.self_attn(x, x, x,
                            attn_mask=attn_mask,
                            key_padding_mask=key_padding_mask,
                            need_weights=False,
-                           is_causal=is_causal)[0]  # Added is_causal
+                           is_causal=is_causal)[0]
         return self.dropout1(x)
 
     def _ff_block(self, x: torch.Tensor) -> torch.Tensor:
@@ -349,6 +388,13 @@ class ALEncoder(MessagePassing):
         is_intersections = is_intersections.long()
         turn_directions = turn_directions.long()
         traffic_controls = traffic_controls.long()
+        
+        # Check if edge_index is empty (no lane-actor connections)
+        if edge_index.size(1) == 0:
+            # Skip MHA block if there are no edges; directly apply feed-forward block
+            x_actor = x_actor + self._ff_block(self.norm2(x_actor))
+            return x_actor
+        
         x_actor = x_actor + self._mha_block(self.norm1(x_actor), x_lane, edge_index, edge_attr, is_intersections,
                                             turn_directions, traffic_controls, rotate_mat, size)
         x_actor = x_actor + self._ff_block(self.norm2(x_actor))

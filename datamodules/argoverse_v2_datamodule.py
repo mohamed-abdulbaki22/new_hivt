@@ -13,6 +13,8 @@
 # limitations under the License.
 from typing import Callable, Optional
 
+import numpy as np
+np.bool = np.bool_
 from pytorch_lightning import LightningDataModule
 from torch_geometric.data import DataLoader
 

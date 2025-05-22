@@ -11,22 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 import os
 import torch
 import numpy as np
-from typing import Dict, List, Optional, Tuple
+import torch.nn as nn
+from typing import Dict, List, Optional, Tuple, Any
+from torch_geometric.data import Data
 
 
-class TemporalData(torch.utils.data.Dataset):
-    """Extended temporal data class with velocity and heading information."""
+class TemporalData(Data):
+    """Extended temporal data class with velocity and heading information for Argoverse v2."""
     
     def __init__(self, 
-                 x: torch.Tensor,
-                 positions: torch.Tensor,
-                 edge_index: torch.Tensor,
+                 x: Optional[torch.Tensor] = None,
+                 positions: Optional[torch.Tensor] = None,
+                 edge_index: Optional[torch.Tensor] = None,
                  y: Optional[torch.Tensor] = None,
-                 v: Optional[torch.Tensor] = None,  # Added velocity
-                 h: Optional[torch.Tensor] = None,  # Added heading
+                 v: Optional[torch.Tensor] = None,
+                 h: Optional[torch.Tensor] = None,
                  num_nodes: Optional[int] = None,
                  padding_mask: Optional[torch.Tensor] = None,
                  bos_mask: Optional[torch.Tensor] = None,
@@ -43,70 +46,73 @@ class TemporalData(torch.utils.data.Dataset):
                  city: Optional[str] = None,
                  origin: Optional[torch.Tensor] = None,
                  theta: Optional[torch.Tensor] = None,
+                 node_features: Optional[torch.Tensor] = None,
                  **kwargs) -> None:
+        
+        # Initialize all attributes as Data expects them
+        super().__init__()
+        
+        # Core trajectory data
         self.x = x
         self.positions = positions
         self.edge_index = edge_index
         self.y = y
-        self.v = v if v is not None else torch.zeros_like(x)  # Default zeros if not provided
-        self.h = h if h is not None else torch.zeros(x.size(0), x.size(1))  # Default zeros if not provided
-        self.num_nodes = num_nodes if num_nodes is not None else x.size(0)
+        self.v = v
+        self.h = h
+        
+        # Metadata
+        self.num_nodes = num_nodes
+        self.seq_id = seq_id
+        self.av_index = av_index
+        self.agent_index = agent_index
+        self.city = city
+        
+        # Masking and transformations
         self.padding_mask = padding_mask
         self.bos_mask = bos_mask
         self.rotate_angles = rotate_angles
+        self.origin = origin
+        self.theta = theta
+        
+        # Lane information
         self.lane_vectors = lane_vectors
         self.is_intersections = is_intersections
         self.turn_directions = turn_directions
         self.traffic_controls = traffic_controls
         self.lane_actor_index = lane_actor_index
         self.lane_actor_vectors = lane_actor_vectors
-        self.seq_id = seq_id
-        self.av_index = av_index
-        self.agent_index = agent_index
-        self.city = city
-        self.origin = origin
-        self.theta = theta
+        
+        # Additional features
+        self.node_features = node_features
         
         # Store any additional kwargs
-        for key, item in kwargs.items():
-            self[key] = item
-
-    def __getitem__(self, key):
-        return getattr(self, key)
-
-    def __setitem__(self, key, value):
-        setattr(self, key, value)
-        
-    def __len__(self):
-        return self.num_nodes
+        for key, value in kwargs.items():
+            setattr(self, key, value)
     
-    def __contains__(self, key):
-        return hasattr(self, key)
+    def __inc__(self, key: str, value: Any, *args, **kwargs) -> Any:
+        """Define how to increment indices when batching."""
+        if key == 'edge_index':
+            return self.num_nodes
+        elif key == 'lane_actor_index':
+            return torch.tensor([[self.lane_vectors.size(0) if self.lane_vectors is not None else 0], 
+                                [self.num_nodes]])
+        elif key in ['av_index', 'agent_index']:
+            return self.num_nodes
+        else:
+            return 0
     
-    @property
-    def keys(self):
-        keys = [key for key in self.__dict__.keys() if not key.startswith('_') and key != 'keys']
-        return keys
-    
-    def to(self, device):
-        """Transfers all tensor attributes to the specified device."""
-        for key, item in self.__dict__.items():
-            if torch.is_tensor(item):
-                self[key] = item.to(device)
-            elif isinstance(item, list) and len(item) > 0 and torch.is_tensor(item[0]):
-                self[key] = [i.to(device) for i in item]
-        return self
-    
-    def cuda(self):
-        """Transfers all tensor attributes to CUDA."""
-        return self.to('cuda')
-    
-    def cpu(self):
-        """Transfers all tensor attributes to CPU."""
-        return self.to('cpu')
+    def __cat_dim__(self, key: str, value: Any, *args, **kwargs) -> Any:
+        """Define concatenation dimension for batching."""
+        if key in ['edge_index', 'lane_actor_index']:
+            return 1
+        elif key in ['seq_id', 'city']:
+            return None  # Don't concatenate strings
+        else:
+            return 0
 
 
 class DistanceDropEdge(object):
+    """Drop edges based on distance threshold."""
 
     def __init__(self, max_distance: Optional[float] = None) -> None:
         self.max_distance = max_distance
@@ -124,6 +130,7 @@ class DistanceDropEdge(object):
 
 
 def init_weights(m: nn.Module) -> None:
+    """Initialize weights for various layer types."""
     if isinstance(m, nn.Linear):
         nn.init.xavier_uniform_(m.weight)
         if m.bias is not None:
@@ -189,3 +196,28 @@ def init_weights(m: nn.Module) -> None:
                 nn.init.zeros_(param)
             elif 'bias_hh' in name:
                 nn.init.zeros_(param)
+
+
+def safe_tensor_to_device(tensor: Optional[torch.Tensor], device: torch.device) -> Optional[torch.Tensor]:
+    """Safely move tensor to device if it exists."""
+    if tensor is not None and isinstance(tensor, torch.Tensor):
+        return tensor.to(device)
+    return tensor
+
+
+def validate_argoverse_data(data: TemporalData) -> bool:
+    """Validate that TemporalData contains required fields for Argoverse v2."""
+    required_fields = ['x', 'positions', 'edge_index', 'num_nodes']
+    
+    for field in required_fields:
+        if not hasattr(data, field) or getattr(data, field) is None:
+            return False
+    
+    # Check tensor shapes
+    if data.x.size(0) != data.num_nodes:
+        return False
+    
+    if data.positions.size(0) != data.num_nodes:
+        return False
+    
+    return True

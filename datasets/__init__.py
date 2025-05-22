@@ -11,5 +11,5 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from datasets.argoverse_v1_dataset import ArgoverseV1Dataset
+# from datasets.argoverse_v1_dataset import ArgoverseV1Dataset
 from datasets.argoverse_v2_dataset import ArgoverseV2Dataset

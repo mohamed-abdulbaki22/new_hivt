@@ -48,8 +48,32 @@ if __name__ == '__main__':
     parser = HiVT.add_model_specific_args(parser)
     args = parser.parse_args()
 
-    model_checkpoint = ModelCheckpoint(monitor=args.monitor, save_top_k=args.save_top_k, mode='min')
-    trainer = pl.Trainer.from_argparse_args(args, callbacks=[model_checkpoint])
+    # Initialize ModelCheckpoint callback
+    model_checkpoint = ModelCheckpoint(
+        monitor=args.monitor,
+        save_top_k=args.save_top_k,
+        mode='min'
+    )
+
+    # Initialize Trainer with arguments
+    trainer = pl.Trainer(
+        accelerator='gpu' if args.gpus > 0 else 'cpu',
+        devices=args.gpus if args.gpus > 0 else 1,
+        max_epochs=args.max_epochs,
+        callbacks=[model_checkpoint]
+    )
+
+    # Initialize model and datamodule
     model = HiVT(**vars(args))
-    datamodule = ArgoverseV2DataModule.from_argparse_args(args)
+    datamodule = ArgoverseV2DataModule(
+        root=args.root,
+        train_batch_size=args.train_batch_size,
+        val_batch_size=args.val_batch_size,
+        shuffle=args.shuffle,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_memory,
+        persistent_workers=args.persistent_workers
+    )
+
+    # Start training
     trainer.fit(model, datamodule)
