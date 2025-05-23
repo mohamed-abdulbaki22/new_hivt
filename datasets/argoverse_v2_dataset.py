@@ -416,7 +416,7 @@ def get_lane_features_v2(static_map: ArgoverseStaticMap,
     for node_idx in node_inds:
         # Transform back to global coordinates
         global_position = (torch.matmul(node_positions[node_idx].unsqueeze(0), 
-                          rotate_mat.transpose(0, 1)) + origin).squeeze().numpy()
+                          rotate_mat[node_idx].transpose(0, 1)) + origin).squeeze().numpy()
         
         # Check each lane segment
         for lane_id, lane_segment in all_lane_segments.items():

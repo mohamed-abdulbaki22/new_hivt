@@ -159,7 +159,7 @@ class AAEncoder(MessagePassing):
             if rotate_mat is None:
                 center_embed = self.center_embed(x)
             else:
-                print(f"rotate_mat shape: {rotate_mat.shape}")
+                # print(f"rotate_mat shape: {rotate_mat.shape}")
                 if rotate_mat.dim() == 4 and rotate_mat.size(0) == 1:  # [1, num_nodes, 2, 2]
                     rotate_mat_expanded = rotate_mat[0]  # Shape: [num_nodes, 2, 2]
                 elif rotate_mat.dim() == 3:  # [num_nodes, 2, 2]
