@@ -15,6 +15,8 @@ from argparse import ArgumentParser
 
 import pytorch_lightning as pl
 import torch
+import numpy as np
+np.bool = np.bool_
 from torch_geometric.data import DataLoader
 
 from datasets import ArgoverseV2Dataset
