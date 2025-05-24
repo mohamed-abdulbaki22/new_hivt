@@ -1,4 +1,4 @@
-# Copyright (c) 2022, Zikang Zhou. All rights reserved.
+# Copyright (c) 2022-2025, Modified from Zikang Zhou's implementation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,4 +11,5 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from datasets.argoverse_v1_dataset import ArgoverseV1Dataset
+# from datasets.argoverse_v1_dataset import ArgoverseV1Dataset
+from datasets.argoverse_v2_dataset import ArgoverseV2Dataset

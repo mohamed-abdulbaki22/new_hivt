@@ -96,13 +96,49 @@ class HiVT(pl.LightningModule):
             rotate_mat[:, 0, 1] = -sin_vals
             rotate_mat[:, 1, 0] = sin_vals
             rotate_mat[:, 1, 1] = cos_vals
+            
             if data.y is not None:
                 data.y = torch.bmm(data.y, rotate_mat)
+                
+            if hasattr(data, 'node_features'):
+                # Separately handle position, velocity, and heading rotation
+                # Positions and velocities (first 4 dims) get matrix rotation
+                pos_vel = data.node_features[:, :, :4].reshape(-1, 4)
+                pos = torch.bmm(pos_vel[:, :2].unsqueeze(1), 
+                              rotate_mat.repeat(data.node_features.size(1), 1, 1)).squeeze(1)
+                vel = torch.bmm(pos_vel[:, 2:4].unsqueeze(1), 
+                              rotate_mat.repeat(data.node_features.size(1), 1, 1)).squeeze(1)
+                
+                # Heading (5th dim) gets angle addition
+                heading = data.node_features[:, :, 4] - data['rotate_angles'].unsqueeze(1)
+                
+                # Reconstruct rotated features
+                rotated = torch.cat([
+                    pos.reshape(data.node_features.size(0), data.node_features.size(1), 2),
+                    vel.reshape(data.node_features.size(0), data.node_features.size(1), 2),
+                    heading.unsqueeze(-1)
+                ], dim=2)
+                
+                # Store original for later restoration
+                original_node_features = data.node_features
+                data.node_features = rotated
+            
             data['rotate_mat'] = rotate_mat
         else:
             data['rotate_mat'] = None
 
-        local_embed = self.local_encoder(data=data)
+        # Use node_features (position, velocity, heading) if available, otherwise use x
+        if hasattr(data, 'node_features'):
+            # Temporarily store original x
+            original_x = data.x
+            # Use node_features instead
+            data.x = data.node_features
+            local_embed = self.local_encoder(data=data)
+            # Restore original x
+            data.x = original_x
+        else:
+            local_embed = self.local_encoder(data=data)
+            
         global_embed = self.global_interactor(data=data, local_embed=local_embed)
         y_hat, pi = self.decoder(local_embed=local_embed, global_embed=global_embed)
         return y_hat, pi
@@ -180,11 +216,11 @@ class HiVT(pl.LightningModule):
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = parent_parser.add_argument_group('HiVT')
-        parser.add_argument('--historical_steps', type=int, default=20)
-        parser.add_argument('--future_steps', type=int, default=30)
+        parser.add_argument('--historical_steps', type=int, default=50)
+        parser.add_argument('--future_steps', type=int, default=60)
         parser.add_argument('--num_modes', type=int, default=6)
         parser.add_argument('--rotate', type=bool, default=True)
-        parser.add_argument('--node_dim', type=int, default=2)
+        parser.add_argument('--node_dim', type=int, default=5)  # Changed from 2 to 5 for [x, y, vx, vy, heading]
         parser.add_argument('--edge_dim', type=int, default=2)
         parser.add_argument('--embed_dim', type=int, required=True)
         parser.add_argument('--num_heads', type=int, default=8)
